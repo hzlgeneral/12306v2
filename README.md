@@ -20,7 +20,7 @@ EMAIL_CONFIG = {
 
 ### 2. 启动
 ```bash
-docker-compose up -d --build
+cd docker && docker compose up -d --build
 ```
 
 ### 3. 访问

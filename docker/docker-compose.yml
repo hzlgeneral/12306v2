@@ -1,6 +1,8 @@
 services:
   train-ticket:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
     image: train-ticket-processor:latest
     container_name: train-ticket-processor
     volumes:

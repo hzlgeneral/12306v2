@@ -440,11 +440,11 @@ class App:
                             activebackground=C_PANEL, selectcolor=C_PRIMARY, cursor="hand2")
         cb.grid(row=2, column=2, columnspan=2, sticky="w", padx=4, pady=5)
 
-        # 日期范围
-        _lbl("日期从(YYYY-MM-DD):", 3, 0)
-        _entry(self.dfrom_var, 14).grid(row=3, column=1, sticky="w", padx=4, pady=5)
-        _lbl("日期到:", 3, 2)
-        _entry(self.dto_var, 14).grid(row=3, column=3, sticky="w", padx=4, pady=5)
+        # 日期范围（点击输入框或 📅 弹出日历选择）
+        DatePicker(frm, "开始日期:", self.dfrom_var).grid(
+            row=3, column=0, columnspan=4, sticky="w", padx=12, pady=(6, 2))
+        DatePicker(frm, "结束日期:", self.dto_var).grid(
+            row=4, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 6))
 
         # 说明：IMAP/SMTP 已自动匹配
         imap_s, imap_p, smtp_s, smtp_p, _ = detect_servers(self.email_var.get())
@@ -452,8 +452,12 @@ class App:
                 f"{imap_s}:{imap_p} / {smtp_s}:{smtp_p}")
         self.note_var = tk.StringVar(value=note)
         tk.Label(frm, textvariable=self.note_var, bg=C_PANEL, fg=C_SUB,
-                 font=("Microsoft YaHei UI", 9), anchor="w")\
-            .grid(row=4, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 10))
+                 font=("Microsoft YaHei UI", 9), anchor="w").grid(
+            row=5, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 4))
+        # 日期默认说明
+        tk.Label(frm, text="※ 日期不填则默认拉取「近 30 天」（今天往前 30 天 至 今天）。",
+                 bg=C_PANEL, fg=C_SUB, font=("Microsoft YaHei UI", 9), anchor="w").grid(
+            row=6, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 10))
 
     # ---------- 按钮区 ----------
     def _build_buttons(self, parent):
