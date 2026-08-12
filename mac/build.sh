@@ -36,7 +36,7 @@ python -m pip install --quiet pyinstaller
 echo "==> 开始打包 PyInstaller（--windowed，macOS 标准 .app 包）"
 echo "    注：macOS 上 --onefile 与 .app 包不兼容，故用 onedir 生成自包含的 .app"
 rm -rf dist build
-pyinstaller --windowed --name "$APP_NAME" $ICON_ARG --paths . windows/main.py
+pyinstaller --windowed --name "$APP_NAME" $ICON_ARG --paths=. windows/main.py
 
 echo ""
 echo "✅ 完成！应用位于："

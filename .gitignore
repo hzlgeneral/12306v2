@@ -4,6 +4,7 @@ dist/
 *.spec
 __pycache__/
 *.pyc
+*.exe
 
 # 虚拟环境
 venv/
