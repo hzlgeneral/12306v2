@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>火车票发票识别与排列工具</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f5f5f5; color: #333; line-height: 1.6; }
+        .container { max-width: 800px; margin: 50px auto; padding: 30px; background: #fff; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #2c3e50; margin-bottom: 30px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
+        .form-row { display: flex; gap: 15px; margin-bottom: 15px; }
+        .form-row .form-group { flex: 1; margin-bottom: 0; }
+        input[type="text"], input[type="password"], input[type="date"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; }
+        input[type="file"] { width: 100%; padding: 10px; border: 2px dashed #ddd; border-radius: 5px; background: #f9f9f9; }
+        .btn { display: inline-block; padding: 12px 24px; border: none; border-radius: 5px; font-size: 16px; font-weight: bold; cursor: pointer; text-decoration: none; margin: 5px; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-primary { background: #3498db; color: #fff; }
+        .btn-success { background: #27ae60; color: #fff; }
+        .btn-warning { background: #f39c12; color: #fff; }
+        .btn-secondary { background: #95a5a6; color: #fff; }
+        .email-section { background: #e8f4fd; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        .email-section h3 { color: #2980b9; margin-bottom: 15px; }
+        .small-text { font-size: 12px; color: #666; margin-top: 5px; }
+        .loading { display: none; margin-top: 10px; color: #666; }
+        .loading.show { display: block; }
+        .result-message { margin-top: 15px; padding: 10px; border-radius: 5px; display: none; }
+        .result-message.success { background: #d4edda; color: #155724; display: block; }
+        .result-message.error { background: #f8d7da; color: #721c24; display: block; }
+        .flash-message { margin: 20px 0; padding: 15px; border-radius: 5px; background: #f8d7da; color: #721c24; }
+        .instructions { margin: 30px 0; padding: 20px; background: #f8f9fa; border-radius: 5px; border-left: 4px solid #3498db; }
+        .instructions ul { margin-left: 20px; margin-top: 10px; }
+        .instructions li { margin-bottom: 5px; }
+        hr { margin: 30px 0; border: 0; border-top: 2px solid #eee; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>火车票发票识别与排列工具</h1>
+        
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}<div class="flash-message">{% for m in messages %}{{ m }}{% endfor %}</div>{% endif %}
+        {% endwith %}
+        
+        <div class="email-section">
+            <h3>从邮箱获取发票</h3>
+            
+            <div class="form-group">
+                <label>邮箱授权码（可选，已配置可留空）</label>
+                <input type="password" id="password" placeholder="QQ邮箱授权码">
+                <p class="small-text">获取：QQ邮箱设置 → 账户 → POP3/IMAP → 生成授权码</p>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label>开始日期</label>
+                    <input type="date" id="date_from">
+                </div>
+                <div class="form-group">
+                    <label>结束日期</label>
+                    <input type="date" id="date_to">
+                </div>
+            </div>
+            <p class="small-text">不选日期则搜索最近30天的邮件</p>
+            
+            <div style="margin-top: 15px;">
+                <button class="btn btn-success" id="fetch_btn" onclick="fetchEmails()">从邮箱获取发票</button>
+                <button class="btn btn-warning" id="one_click_btn" onclick="fetchAndProcess()">一键获取并生成PDF</button>
+            </div>
+            
+            <div id="loading" class="loading">正在处理，请稍候...</div>
+            <div id="result" class="result-message"></div>
+        </div>
+        
+        <hr>
+        
+        <form method="POST" enctype="multipart/form-data">
+            <div class="form-group">
+                <label>选择PDF文件（支持多文件）</label>
+                <input type="file" name="files" multiple accept=".pdf">
+            </div>
+            <button type="submit" class="btn btn-primary">上传并处理</button>
+            <a href="{{ url_for('clear_files') }}" class="btn btn-secondary">清理文件</a>
+        </form>
+        
+        <div style="margin-top: 20px;">
+            <button class="btn btn-primary" onclick="processInvoices()">处理"发票"文件夹</button>
+        </div>
+        <div id="result2" class="result-message"></div>
+        
+        <div class="instructions">
+            <h3>使用说明</h3>
+            <ul>
+                <li><b>日期筛选：</b>选择日期范围，只获取该时间段内的邮件</li>
+                <li><b>自动命名：</b>按 出发站-到达站_开车时间.pdf 命名</li>
+                <li><b>自动去重：</b>相同内容的PDF自动跳过</li>
+                <li><b>合并PDF：</b>按开车时间排序，2x4排列在A4纸上</li>
+            </ul>
+        </div>
+    </div>
+    
+    <script>
+        function show(id, ok, msg) {
+            var el = document.getElementById(id);
+            el.textContent = msg;
+            el.className = 'result-message ' + (ok ? 'success' : 'error');
+        }
+        function hide(id) { document.getElementById(id).className = 'result-message'; }
+        function load(show) { var el = document.getElementById('loading'); if(show) el.classList.add('show'); else el.classList.remove('show'); }
+        function dis(id, v) { document.getElementById(id).disabled = v; }
+        
+        function getData() {
+            return {
+                password: document.getElementById('password').value,
+                date_from: document.getElementById('date_from').value,
+                date_to: document.getElementById('date_to').value
+            };
+        }
+        
+        function fetchEmails() {
+            var d = getData();
+            dis('fetch_btn', true); dis('one_click_btn', true);
+            load(true); hide('result');
+            
+            var fd = new FormData();
+            if (d.password) fd.append('password', d.password);
+            if (d.date_from) fd.append('date_from', d.date_from);
+            if (d.date_to) fd.append('date_to', d.date_to);
+            
+            fetch('/fetch_emails', {method: 'POST', body: fd})
+                .then(r => r.json())
+                .then(data => { load(false); dis('fetch_btn', false); dis('one_click_btn', false); show('result', data.success, data.message); })
+                .catch(e => { load(false); dis('fetch_btn', false); dis('one_click_btn', false); show('result', false, '请求失败'); });
+        }
+        
+        function fetchAndProcess() {
+            var d = getData();
+            dis('fetch_btn', true); dis('one_click_btn', true);
+            load(true); hide('result');
+            
+            var fd = new FormData();
+            if (d.password) fd.append('password', d.password);
+            if (d.date_from) fd.append('date_from', d.date_from);
+            if (d.date_to) fd.append('date_to', d.date_to);
+            
+            fetch('/fetch_and_process', {method: 'POST', body: fd})
+                .then(r => r.json())
+                .then(data => {
+                    load(false); dis('fetch_btn', false); dis('one_click_btn', false);
+                    show('result', data.success, data.message);
+                    if (data.success && data.download_url) setTimeout(() => location.href = data.download_url, 1500);
+                })
+                .catch(e => { load(false); dis('fetch_btn', false); dis('one_click_btn', false); show('result', false, '请求失败'); });
+        }
+        
+        function processInvoices() {
+            dis('fetch_btn', true); dis('one_click_btn', true); hide('result2');
+            fetch('/process_invoices', {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    dis('fetch_btn', false); dis('one_click_btn', false);
+                    show('result2', data.success, data.message);
+                    if (data.success && data.download_url) setTimeout(() => location.href = data.download_url, 1500);
+                })
+                .catch(e => { dis('fetch_btn', false); dis('one_click_btn', false); show('result2', false, '请求失败'); });
+        }
+    </script>
+</body>
+</html>

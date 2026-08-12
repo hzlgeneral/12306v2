@@ -1,0 +1,43 @@
+name: Build Windows EXE
+
+# 在你的 Windows 机器上无需安装任何东西：
+# 把本仓库推送到 GitHub，打一个 Release（或推送 tag），
+# GitHub 云端会自动用 Windows 环境打包出独立 .exe 供下载。
+# 打出来的 exe 运行时不需要 Python。
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:  # 也支持在 Actions 页面手动触发
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r windows_app/requirements.txt
+          pip install pyinstaller
+
+      - name: 打包为单文件 exe
+        run: |
+          cd windows_app
+          pyinstaller --onefile --windowed --name "火车票发票合并" --paths .. main.py
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: 火车票发票合并-windows
+          path: windows_app/dist/火车票发票合并.exe
