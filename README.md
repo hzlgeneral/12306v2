@@ -56,10 +56,12 @@ cd docker && docker compose up -d --build
 4. 在弹出的窗口里填写邮箱与授权码，选日期范围后开始
 
 ### 方式三：macOS 桌面版
-```bash
-bash mac/build.sh
-```
-产物在 `dist/火车票发票合并.app`，双击运行，在窗口里填写邮箱与授权码。
+- **不想自己打包**：到 [Releases](https://github.com/hzlgeneral/12306v2/releases) 下载预编译的 `火车票发票合并-mac-v1.0.zip`，解压后双击即用（首次打开若被拦截：`xattr -dr com.apple.quarantine "/path/火车票发票合并.app"`）。
+- **自己打包**：
+  ```bash
+  bash mac/build.sh
+  ```
+  产物在 `dist/火车票发票合并.app`，双击运行，在窗口里填写邮箱与授权码。
 
 ### 配置邮箱（Docker 网页版首次使用）
 编辑 `config.py` 设置白名单发件人（默认已含 12306 官方发件地址）；邮箱地址与授权码**在网页界面填写**，不写进任何文件：
