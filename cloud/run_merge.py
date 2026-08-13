@@ -10,16 +10,19 @@
   4. 通过 SMTP 直接发送到指定邮箱（绕开 qq-mail 连接器的 1MB/确认限制，可无人值守）
 
 用法：
-  python run_merge.py --to 同事@qq.com
-  python run_merge.py --to 同事@qq.com --from 2026-07-01 --to 2026-07-31
-  python run_merge.py                      # 用 mail_settings.json 里的 default_recipient，默认上个月
+  python run_merge.py --to 同事@qq.com                      # 默认：仅合并「开车时间在上个月」的发票
+  python run_merge.py --to 同事@qq.com --dry-run            # 只筛选/合并并报告，不发送（验证用）
+  python run_merge.py --to 同事@qq.com --from 2026-07-01 --to 2026-07-31  # 手动指定范围（不过滤开车月份）
 
+说明：默认月度模式下，按发票上的『开车时间』精确筛选，仅保留开车时间在上个月的发票；
+      开车时间为上上个月及更早（或无法识别）的发票自动跳过，不纳入合并。
 输出：末尾打印一行 JSON 汇总，供自动化读取汇报。
 """
 import os
 import sys
 import json
 import argparse
+import shutil
 import tempfile
 import traceback
 from datetime import datetime, timedelta
@@ -49,7 +52,19 @@ def last_month_range():
     return start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
 
 
-def send_pdf_smtp(settings, pdf_path, to_email):
+def prev_month_boundaries():
+    """返回 (上月1号 00:00, 本月1号 00:00)。
+    用于按『开车时间』过滤：仅保留开车时间落在 [上月1号, 本月1号) 的发票，
+    上上个月及更早（以及无法识别开车时间的）一律排除。"""
+    today = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if today.month == 1:
+        prev_start = today.replace(year=today.year - 1, month=12)
+    else:
+        prev_start = today.replace(month=today.month - 1)
+    return prev_start, today
+
+
+def send_pdf_smtp(settings, pdf_path, to_email, month_label=None):
     """通过 SMTP_SSL 直接发送合并后的 PDF（无人值守，无需两步确认）。"""
     import smtplib
     from email.mime.multipart import MIMEMultipart
@@ -61,10 +76,11 @@ def send_pdf_smtp(settings, pdf_path, to_email):
     user = settings["email_address"]
     pwd = settings["password"]
 
+    subject_month = month_label or datetime.now().strftime("%Y%m")
     msg = MIMEMultipart()
     msg["From"] = user
     msg["To"] = to_email
-    msg["Subject"] = f"12306火车票发票合并_{datetime.now().strftime('%Y%m')}"
+    msg["Subject"] = f"12306火车票发票合并_{subject_month}"
     msg.attach(MIMEText("附件为按开车时间排序合并后的 12306 电子客票发票，请查收。", "plain", "utf-8"))
 
     with open(pdf_path, "rb") as f:
@@ -83,6 +99,7 @@ def main():
     ap.add_argument("--to", help="接收合并 PDF 的邮箱（缺省读 mail_settings.json 的 default_recipient）")
     ap.add_argument("--from", dest="date_from", help="开始日期 YYYY-MM-DD（缺省=上月1号）")
     ap.add_argument("--to-date", dest="date_to", help="结束日期 YYYY-MM-DD（缺省=本月1号）")
+    ap.add_argument("--dry-run", action="store_true", help="只拉取+筛选+合并并报告，不发送邮件（用于验证）")
     args = ap.parse_args()
 
     settings = load_settings()
@@ -90,10 +107,17 @@ def main():
     if not to_email:
         raise ValueError("未指定接收邮箱：请加 --to 或在 mail_settings.json 配 default_recipient")
 
-    if not args.date_from or not args.date_to:
-        df, dt = last_month_range()
-        args.date_from = args.date_from or df
-        args.date_to = args.date_to or dt
+    default_mode = not (args.date_from and args.date_to)
+    if default_mode:
+        # 默认月度模式：拉取范围放宽到「上月1号 ~ 今天」，避免上月发票的邮件迟发到本月而被漏掉；
+        # 真正的筛选在下面按『开车时间』进行，仅保留上个月开车的发票。
+        prev_start, cur_start = prev_month_boundaries()
+        args.date_from = prev_start.strftime("%Y-%m-%d")
+        args.date_to = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        month_label = prev_start.strftime("%Y-%m")
+    else:
+        prev_start = cur_start = None
+        month_label = f"{args.date_from}_{args.date_to}"
 
     # 工作目录用 /tmp，避免污染仓库
     work = tempfile.mkdtemp(prefix="12306_merge_")
@@ -113,10 +137,37 @@ def main():
             print(json.dumps(summary, ensure_ascii=False))
             return
 
+        # 1.5) 默认模式下按『开车时间』过滤：仅保留上月开车的发票，跳过上上个月及更早
+        if default_mode:
+            kept_folder = os.path.join(work, "发票_上月")
+            os.makedirs(kept_folder, exist_ok=True)
+            excluded = []
+            kept = []
+            for f in os.listdir(inv_folder):
+                if not f.lower().endswith(".pdf"):
+                    continue
+                src = os.path.join(inv_folder, f)
+                dt = ticket_core.extract_departure_info(src)
+                if dt and prev_start <= dt < cur_start:
+                    shutil.copy(src, os.path.join(kept_folder, f))
+                    kept.append((f, dt.strftime("%Y-%m-%d")))
+                else:
+                    reason = dt.strftime("%Y-%m") if dt else "无开车时间"
+                    excluded.append((f, reason))
+                    print(f"[FILTER] 排除（开车时间 {reason}，非上月）: {f}", file=sys.stderr)
+            inv_folder = kept_folder
+            summary["excluded_count"] = len(excluded)
+            summary["excluded"] = [{"file": x[0], "month": x[1]} for x in excluded]
+            summary["kept_count"] = len(kept)
+            if not kept:
+                summary["detail"] = f"拉取到 {total} 封邮件，但无『开车时间在上月({month_label})』的发票可合并"
+                print(json.dumps(summary, ensure_ascii=False))
+                return
+
         # 2) 合并
         summary["step"] = "merge"
         os.makedirs(os.path.join(work, "output"), exist_ok=True)
-        out_pdf = os.path.join(work, "output", f"火车票发票合并_{args.date_from}_{args.date_to}.pdf")
+        out_pdf = os.path.join(work, "output", f"火车票发票合并_{month_label}.pdf")
         res = ticket_core.process_pdf_files(inv_folder, out_pdf)
         if not res["success"]:
             summary["detail"] = res["error"]
@@ -127,12 +178,17 @@ def main():
 
         # 3) 发送
         summary["step"] = "send"
-        send_pdf_smtp(settings, out_pdf, to_email)
-        summary["sent_to"] = to_email
+        if args.dry_run:
+            summary["dry_run"] = True
+            summary["sent_to"] = to_email
+            summary["note"] = "dry-run：仅筛选+合并，未实际发送"
+        else:
+            send_pdf_smtp(settings, out_pdf, to_email, month_label)
+            summary["sent_to"] = to_email
         summary["pdf_path"] = out_pdf
         summary["pdf_size"] = os.path.getsize(out_pdf)
         summary["ok"] = True
-        summary["detail"] = f"已合并 {res['count']} 张并发送至 {to_email}"
+        summary["detail"] = f"已合并 {res['count']} 张" + ("" if args.dry_run else f"并发送至 {to_email}")
     except Exception as e:
         summary["detail"] = f"{type(e).__name__}: {e}"
         summary["trace"] = traceback.format_exc()

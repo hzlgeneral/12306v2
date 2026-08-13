@@ -19,15 +19,19 @@
    ```bash
    /Users/howell/.workbuddy/binaries/python/envs/default/bin/python cloud/run_merge.py --to 同事@qq.com
    ```
-   默认合并「上个月」的发票；也可指定范围：
+   默认模式（不指定日期）按**发票上的「开车时间」精确筛选**：仅合并开车时间在上个月的发票；
+   开车时间为上上个月及更早、或无法识别开车时间的，自动跳过不合并。
+   指定范围则按邮件日期不过滤开车月份（用于全量补发）：
    `--from 2026-07-01 --to 2026-07-31`
+   仅验证筛选/合并效果、不发送邮件：`--dry-run`
 
 ## 自动化
-在 WorkBuddy 里建一个定时自动化，prompt 类似：
+在 WorkBuddy 里建一个定时自动化（已建好，名称「12306发票合并并发送」，每月 1 号 09:00），
+prompt 类似：
 > 运行火车票发票合并：用受管 Python 执行
-> `/Users/howell/Desktop/AI项目新/12306v2/cloud/run_merge.py`，
-> 拉取 12306 发票邮箱里上个月的发票，按开车时间排序合并，SMTP 发送到 <目标邮箱>。
-> 完成后汇报合并张数与发送结果。
+> `/Users/howell/Desktop/AI项目新/12306v2/cloud/run_merge.py --to zlhhe@beckman.com`，
+> 拉取 12306 发票邮件，按开车时间筛选仅保留上个月开车的发票，排序合并，SMTP 发送到目标邮箱。
+> 完成后汇报保留/排除张数及发送结果。
 
 ## 隐私说明
 - `mail_settings.json` 存授权码，已被 git 忽略，永不进仓库。
