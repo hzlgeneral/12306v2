@@ -1,0 +1,9 @@
+{
+  "email_address": "你的QQ邮箱@qq.com",
+  "password": "16位邮箱授权码（不是QQ登录密码）",
+  "imap_server": "imap.qq.com",
+  "imap_port": 993,
+  "smtp_server": "smtp.qq.com",
+  "smtp_port": 465,
+  "default_recipient": "接收合并PDF的邮箱@qq.com"
+}
