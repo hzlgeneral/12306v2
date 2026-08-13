@@ -35,7 +35,7 @@ import ticket_core
 
 
 def load_settings():
-    p = os.path.join(REPO_ROOT, "mail_settings.json")
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail_settings.json")
     if not os.path.exists(p):
         raise FileNotFoundError(f"缺少凭据文件 {p}（请从 mail_settings.example.json 复制并填入真实授权码）")
     with open(p, "r", encoding="utf-8") as f:
