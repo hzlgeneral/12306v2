@@ -1,0 +1,4 @@
+# 报销凭证归集（cloud 版）依赖
+# 仅在受管 Python venv 中安装：
+#   /Users/howell/.workbuddy/binaries/python/envs/default/bin/pip install -r cloud/requirements-cloud.txt
+pymupdf>=1.24

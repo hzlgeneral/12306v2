@@ -4,15 +4,17 @@
 
 import os
 import re
+import json
 import email
 import imaplib
 import zipfile
+import tempfile
 import hashlib
 from datetime import datetime, timedelta
 from email.header import decode_header
 from email.utils import parseaddr
 
-from config import EMAIL_CONFIG, EMAIL_KEYWORDS, FOLDERS, EMAIL_SEARCH, SENDER_WHITELIST
+from config import EMAIL_CONFIG, EMAIL_KEYWORDS, FOLDERS, EMAIL_SEARCH, SENDER_WHITELIST, ATTACH_EXT
 
 _processed_hashes = set()
 
@@ -364,3 +366,243 @@ def fetch_emails_and_download_attachments(password=None, target_folder=None, dat
     finally:
         try: mail.close(); mail.logout()
         except: pass
+
+
+# ============================================================
+# 报销凭证归集：全量附件拉取（cloud 版，追加函数，不改动上方旧逻辑）
+# ============================================================
+
+def _sanitize(name, maxlen=60):
+    """清洗文件名中的非法字符，过长截断，保留原中文名。"""
+    if not name:
+        return "未命名"
+    name = name.strip().replace("\u3000", " ")
+    # 去除路径分隔与系统保留字符
+    for ch in '/\\:*?"<>|\t\n\r':
+        name = name.replace(ch, "_")
+    name = name.strip().strip(".")
+    if not name:
+        name = "未命名"
+    if len(name) > maxlen:
+        base, ext = os.path.splitext(name)
+        name = base[:maxlen - len(ext) - 1] + "_" + ext if ext else base[:maxlen]
+    return name
+
+
+def _ext_of(fn):
+    ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+    return ATTACH_EXT.get(ext, "other"), ext
+
+
+def _sha1_bytes(data):
+    return hashlib.sha1(data).hexdigest()
+
+
+def _save_one_attachment(fn, data, subdir, seen, items, email_idx, email_date, subject, sender):
+    """保存单个附件（含 ZIP 解内 PDF / 图片 / OFD）。返回落盘清单。"""
+    saved = []
+    fl = fn.lower()
+    is_zip = fl.endswith(".zip")
+    target = os.path.join(subdir, _sanitize(fn))
+    i = 1
+    while os.path.exists(target):
+        base, ext = os.path.splitext(target)
+        target = f"{base}_{i}{ext}"; i += 1
+    with open(target, "wb") as f:
+        f.write(data)
+    sha = _sha1_bytes(data)
+
+    if is_zip:
+        # 解压内部 PDF（跳过 OFD）；图片不解压，原样保留 zip 的 PDF 内容
+        try:
+            with zipfile.ZipFile(target, "r") as z:
+                for name in z.namelist():
+                    if name.endswith("/"):
+                        continue
+                    nm = name.rsplit("/", 1)[-1]
+                    kind, ext = _ext_of(nm)
+                    if kind == "pdf":
+                        try:
+                            with z.open(name) as src:
+                                inner = src.read()
+                            inner_sha = _sha1_bytes(inner)
+                            ipath = os.path.join(subdir, _sanitize(nm))
+                            j = 1
+                            while os.path.exists(ipath):
+                                b2, e2 = os.path.splitext(ipath)
+                                ipath = f"{b2}_{j}{e2}"; j += 1
+                            with open(ipath, "wb") as d:
+                                d.write(inner)
+                            saved.append((ipath, inner_sha, "pdf", nm))
+                        except Exception as e:
+                            err(f"ZIP内PDF读取失败 {nm}: {e}")
+                    elif kind in ("image", "ofd"):
+                        # 原样保留在 zip 内：记录但不额外落盘（避免重复）
+                        pass
+        except Exception as e:
+            err(f"ZIP解压失败 {fn}: {e}")
+        # 删掉临时 zip 文件本身（里面的 PDF 已解压）
+        try:
+            os.remove(target)
+        except Exception:
+            pass
+        for ipath, inner_sha, kind, nm in saved:
+            if inner_sha not in seen:
+                seen.add(inner_sha)
+                items.append({
+                    "email_idx": email_idx, "orig_name": nm, "saved_path": ipath,
+                    "ext": "pdf", "is_image": False, "email_date": email_date,
+                    "sha1": inner_sha, "size": os.path.getsize(ipath),
+                    "subject": subject, "sender": sender,
+                })
+        return
+
+    kind, ext = _ext_of(fn)
+    if kind in ("pdf", "ofd", "image"):
+        if sha not in seen:
+            seen.add(sha)
+            items.append({
+                "email_idx": email_idx, "orig_name": fn, "saved_path": target,
+                "ext": ext, "is_image": (kind == "image"), "email_date": email_date,
+                "sha1": sha, "size": len(data),
+                "subject": subject, "sender": sender,
+            })
+    else:
+        # 不支持的附件类型：不纳入归集（如 docx/xlsx 等），仅记录跳过
+        log(f"  跳过不支持的附件类型: {fn}")
+        try:
+            os.remove(target)
+        except Exception:
+            pass
+
+
+def fetch_all_attachments(password=None, work_dir=None, email_address=None,
+                          date_from=None, date_to=None, max_emails=200):
+    """
+    拉取『窗口内所有带附件邮件』的附件，用于报销凭证归集（全发票+水单+刷卡单）。
+
+    与旧 fetch_emails_and_download_attachments 的区别：
+      - 不限定 12306 发件/主题关键词，拉取任意带附件邮件；
+      - 用 BODY.PEEK[] 取信，不会把收件箱标记为已读；
+      - 按邮件分子目录保留【原始中文文件名】与邮件日期/主题/发件人；
+      - 支持 PDF / ZIP(内PDF) / 图片 / OFD；字节 sha1 去重；
+      - 写出 manifest.json 清单供下游分类/分组/合并。
+
+    返回 (manifest, error_msg)：manifest 为 dict；失败返回 (None, msg)。
+    """
+    from email.utils import parsedate_to_datetime
+
+    if work_dir is None:
+        work_dir = tempfile.mkdtemp(prefix="reimburse_")
+    inbox_dir = os.path.join(work_dir, "inbox")
+    os.makedirs(inbox_dir, exist_ok=True)
+
+    if email_address:
+        EMAIL_CONFIG["email_address"] = email_address
+
+    # 日期范围解析（沿用旧 search_emails 的 IMAP 格式）
+    month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+    def fmt(d):
+        return f'{d.day:02d}-{month_names[d.month - 1]}-{d.year}'
+
+    criteria = []
+    if date_from:
+        try:
+            criteria.append(f'SINCE {fmt(datetime.strptime(date_from, "%Y-%m-%d"))}')
+        except Exception:
+            err(f"无效开始日期: {date_from}")
+    if date_to:
+        try:
+            d2 = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+            criteria.append(f'BEFORE {fmt(d2)}')
+        except Exception:
+            err(f"无效结束日期: {date_to}")
+    if not criteria:
+        criteria.append(f'SINCE {fmt(datetime.now() - timedelta(days=30))}')
+    search_criteria = " ".join(criteria)
+
+    mail = connect(password)
+    if not mail:
+        return None, "无法连接邮箱"
+    try:
+        status, ids = mail.search(None, search_criteria)
+        if status != "OK":
+            return None, "搜索失败"
+        id_list = ids[0].split()
+        log(f"窗口内共 {len(id_list)} 封邮件，开始筛选带附件的（上限 {max_emails}）")
+
+        seen = set()
+        items = []
+        emails_meta = []
+        kept = 0
+        for eid in reversed(id_list):
+            if kept >= max_emails:
+                break
+            try:
+                # BODY.PEEK[]：取信不置已读
+                status, data = mail.fetch(eid, "(BODY.PEEK[])")
+                if status != "OK" or not data or not data[0]:
+                    continue
+                raw = data[0][1] if isinstance(data[0], tuple) else None
+                if not raw:
+                    continue
+                msg = email.message_from_bytes(raw)
+                sender = parseaddr(msg.get("From", ""))[1]
+                subj = decode_str(msg.get("Subject", "")) or "(无主题)"
+                dt = parsedate_to_datetime(msg.get("Date"))
+                email_date = dt.strftime("%Y-%m-%d") if dt else None
+
+                atts = []
+                for part in msg.walk():
+                    cd = str(part.get("Content-Disposition", ""))
+                    if "attachment" in cd or part.get_filename():
+                        fn = part.get_filename()
+                        if not fn:
+                            continue
+                        fn = decode_str(fn)
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            atts.append((fn, payload))
+                if not atts:
+                    continue
+
+                kept += 1
+                subdir = os.path.join(inbox_dir, f"{kept:03d}_{_sanitize(subj)[:40]}")
+                os.makedirs(subdir, exist_ok=True)
+                emails_meta.append({
+                    "idx": kept - 1, "date": email_date, "subject": subj,
+                    "sender": sender, "dir": subdir, "attachment_count": len(atts),
+                })
+                for fn, payload in atts:
+                    _save_one_attachment(fn, payload, subdir, seen, items,
+                                         kept - 1, email_date, subj, sender)
+                log(f"  邮件#{kept} [{email_date}] {subj} -> {len(atts)} 附件")
+            except Exception as e:
+                err(f"处理邮件失败: {e}")
+                continue
+
+        manifest = {
+            "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "window": {"date_from": date_from, "date_to": date_to,
+                       "search_criteria": search_criteria,
+                       "max_emails": max_emails},
+            "emails": emails_meta,
+            "items": items,
+            "item_count": len(items),
+            "email_count": len(emails_meta),
+        }
+        with open(os.path.join(work_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        log(f"完成：{len(emails_meta)} 封邮件，{len(items)} 个待处理附件 -> {work_dir}/manifest.json")
+        return manifest, None
+    except Exception as e:
+        err(f"拉取失败: {e}")
+        return None, str(e)
+    finally:
+        try:
+            mail.close()
+            mail.logout()
+        except Exception:
+            pass

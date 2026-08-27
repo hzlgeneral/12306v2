@@ -22,5 +22,13 @@ output/
 # 本地保存的邮箱/SMTP 设置（含授权码，明文，仅本机，切勿入库）
 mail_settings.json
 
+# agent-mail 下载与合并的发票（含隐私，禁止入库）
+cloud/agentmail/
+
+# 报销归集：运行状态与测试样本（含隐私，禁止入库）
+cloud/.state.json
+cloud/tests/fixtures/
+
+
 # 本地记忆 / 自动化状态（项目专属，勿入库）
 .workbuddy/
